@@ -1,12 +1,15 @@
 const std = @import("std");
+const component_types_file = @import("component_types.zig");
 
 pub fn FreeList(comptime T: type) type {
     return struct {
         const Self = @This();
 
+        const InputType = T;
+
         const ListType = std.ArrayList(?T);
         const AvailableQueueAsc = std.PriorityQueue(usize, void, struct {
-            fn lessThan(_: void, a: T, b: T) std.math.Order {
+            fn lessThan(_: void, a: usize, b: usize) std.math.Order {
                 return std.math.order(a, b);
             }
         }.lessThan);
@@ -29,11 +32,15 @@ pub fn FreeList(comptime T: type) type {
             self.available_queue.deinit();
         }
 
-        pub fn get(self: Self, id: usize) ?T {
+        pub fn get(self: Self, id: usize) ?*T {
             if (self.list.items.len <= id) {
                 return null;
             } else {
-                return self.list.items[id];
+                if (self.list.items[id] == null) {
+                    return null;
+                } else {
+                    return &self.list.items[id].?;
+                }
             }
         }
 
@@ -85,7 +92,7 @@ test "free list" {
 
     for (id_list.items) |id| {
         const value = list.get(id);
-        try std.testing.expect(value == id or value == null);
+        try std.testing.expect(value == null or value.?.* == id);
     }
 
     try list.remove(4);
@@ -99,4 +106,83 @@ test "free list" {
     try list.remove(9);
 
     try std.testing.expectEqual(@as(usize, 0), list.list.items.len);
+}
+
+const ComponentsManager = struct {
+    const Self = @This();
+
+    const component_types = blk: {
+        const components_decls = @typeInfo(component_types_file).Struct.decls;
+        var components_types_temp: [components_decls.len]type = undefined;
+        break :blk for (components_decls, 0..) |decl, i| {
+            components_types_temp[i] = @field(component_types_file, decl.name);
+        } else components_types_temp;
+    };
+
+    const components_lists_types = blk: {
+        var tuple_fields: [component_types.len]type = undefined;
+        break :blk for (component_types, 0..) |component_type, i| {
+            tuple_fields[i] = FreeList(component_type);
+        } else tuple_fields;
+    };
+
+    pub const component_types_count = component_types.len;
+
+    allocator: std.mem.Allocator,
+    components_lists: std.meta.Tuple(&components_lists_types),
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        var result = Self{
+            .allocator = allocator,
+            .components_lists = undefined,
+        };
+        inline for (components_lists_types, 0..) |component_list_type, i| {
+            result.components_lists[i] = component_list_type.init(allocator);
+        }
+        return result;
+    }
+
+    pub fn deinit(self: *Self) void {
+        inline for (&self.components_lists) |*component_list| {
+            component_list.deinit();
+        }
+    }
+
+    pub fn type_to_id(comptime component_type: type) usize {
+        inline for (component_types, 0..) |component_type_, i| {
+            if (component_type == component_type_) return i;
+        }
+        @compileError("Component type not found");
+    }
+
+    pub fn put_by_type_id(self: *Self, comptime component_type_id: usize, value: component_types[component_type_id]) !usize {
+        return self.components_lists[component_type_id].put(value);
+    }
+
+    pub fn put(self: *Self, comptime component_type: type, value: component_type) !usize {
+        return self.put_by_type_id(ComponentsManager.type_to_id(component_type), value);
+    }
+
+    pub fn remove(self: *Self, comptime component_type_id: usize, component_id: usize) !void {
+        return self.components_lists[component_type_id].remove(component_id);
+    }
+
+    pub fn get_by_type_id(self: Self, comptime component_type_id: usize, component_id: usize) ?*component_types[component_type_id] {
+        return self.components_lists[component_type_id].get(component_id);
+    }
+
+    pub fn get(self: Self, comptime component_type: type, component_id: usize) ?*component_type {
+        return self.get_by_type_id(ComponentsManager.type_to_id(component_type), component_id);
+    }
+};
+
+test "components manager" {
+    const allocator = std.testing.allocator;
+    var components_manager = ComponentsManager.init(allocator);
+    defer components_manager.deinit();
+
+    const test_pos_component = component_types_file.Test2DPosComponent{ .x = 1, .y = 2 };
+    const test_id = try components_manager.put_by_type_id(ComponentsManager.type_to_id(@TypeOf(test_pos_component)), test_pos_component);
+    try std.testing.expectEqual(test_pos_component, components_manager.get_by_type_id(ComponentsManager.type_to_id(@TypeOf(test_pos_component)), test_id).?.*);
+    try components_manager.remove(ComponentsManager.type_to_id(@TypeOf(test_pos_component)), test_id);
 }
