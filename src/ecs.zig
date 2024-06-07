@@ -115,7 +115,9 @@ const ComponentsManager = struct {
         const components_decls = @typeInfo(component_types_file).Struct.decls;
         var components_types_temp: [components_decls.len]type = undefined;
         break :blk for (components_decls, 0..) |decl, i| {
-            components_types_temp[i] = @field(component_types_file, decl.name);
+            const decl_type = @field(component_types_file, decl.name);
+            if (@typeInfo(decl_type) != .Struct) @compileError("all component types must be a struct");
+            components_types_temp[i] = decl_type;
         } else components_types_temp;
     };
 
@@ -163,8 +165,12 @@ const ComponentsManager = struct {
         return self.put_by_type_id(ComponentsManager.type_to_id(component_type), value);
     }
 
-    pub fn remove(self: *Self, comptime component_type_id: usize, component_id: usize) !void {
+    pub fn remove_by_type_id(self: *Self, comptime component_type_id: usize, component_id: usize) !void {
         return self.components_lists[component_type_id].remove(component_id);
+    }
+
+    pub fn remove(self: *Self, comptime component_type: type, component_id: usize) !void {
+        return self.remove_by_type_id(ComponentsManager.type_to_id(component_type), component_id);
     }
 
     pub fn get_by_type_id(self: Self, comptime component_type_id: usize, component_id: usize) ?*component_types[component_type_id] {
@@ -182,7 +188,13 @@ test "components manager" {
     defer components_manager.deinit();
 
     const test_pos_component = component_types_file.Test2DPosComponent{ .x = 1, .y = 2 };
-    const test_id = try components_manager.put_by_type_id(ComponentsManager.type_to_id(@TypeOf(test_pos_component)), test_pos_component);
-    try std.testing.expectEqual(test_pos_component, components_manager.get_by_type_id(ComponentsManager.type_to_id(@TypeOf(test_pos_component)), test_id).?.*);
-    try components_manager.remove(ComponentsManager.type_to_id(@TypeOf(test_pos_component)), test_id);
+    const test_id = try components_manager.put(@TypeOf(test_pos_component), test_pos_component);
+    try std.testing.expectEqual(
+        test_pos_component,
+        components_manager.get(
+            @TypeOf(test_pos_component),
+            test_id,
+        ).?.*,
+    );
+    try components_manager.remove(@TypeOf(test_pos_component), test_id);
 }
